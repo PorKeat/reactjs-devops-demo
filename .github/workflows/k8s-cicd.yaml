@@ -1,7 +1,7 @@
 # set condition for when to run the action files 
 on: 
   push: 
-    branches: ["master99"]
+    branches: ["master"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
