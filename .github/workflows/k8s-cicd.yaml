@@ -1,65 +1,90 @@
-
 # set condition for when to run the action files 
 on: 
   push: 
     branches: ["master99"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # build docker image , push dockerhub
 env: 
   DOCKER_IMAGE_NAME: k8s-reactjs-itp-gen1
   HELM_REPO: keoKAY/gitops_repo_itp_gen1
+
 jobs: 
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.set_tag.outputs.tag }}
+    steps:
+      - id: set_tag
+        run: echo "tag=${GITHUB_SHA::8}" >> $GITHUB_OUTPUT
+
   ci-job: 
+    needs: setup
     runs-on: ubuntu-latest 
+    timeout-minutes: 15
     environment: DOCKER_ENV
+    env:
+      TAG: ${{ needs.setup.outputs.tag }}
     steps: 
       - name: Checkout code 
         uses: actions/checkout@v3
-      - name: Using Commit SHA 
-        run: |
-          echo "TAG=${GITHUB_SHA::8}" >> $GITHUB_ENV
+
       - name: Show the SHA values 
         run: |
-          echo "TAG = ${{env.TAG }}"
+          echo "TAG = ${{ env.TAG }}"
+
+      - name: Cache Docker layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-
+
       - name: Login to Dockerhub 
-        run: |
-          echo "${{ secrets.PASSWORD }}" | docker login -u ${{secrets.USERNAME}} --password-stdin
-      - name: Build and Tag 
-        run: |
-          docker build -t ${{ secrets.USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{env.TAG }} .
-      - name: Push to Dockerhub 
-        run: |
-          docker push ${{ secrets.USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{env.TAG }}
-      - name: Logout from Dockerhub 
-        if: always()
-        run: |
-          docker logout 
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+
+      - name: Build and Push to Dockerhub 
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ${{ secrets.USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}:${{ env.TAG }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
 # update helm repo with new image
   cd-job: 
-    needs: ci-job
-    runs-on: ubuntu-latest 
+    needs: [setup, ci-job]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: DOCKER_ENV
+    env:
+      TAG: ${{ needs.setup.outputs.tag }}
     steps: 
       - name: Install yq command 
         run: |
-          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          wget https://github.com/mikefarah/yq/releases/download/v4.44.1/yq_linux_amd64 -O /usr/local/bin/yq
           chmod +x /usr/local/bin/yq
-      - name: Add Commit SHA to TAG env 
-        run: |
-          echo "TAG=${GITHUB_SHA::8}" >> $GITHUB_ENV
-      
-      # clone the helm repo remporarily 
+
+      # clone the helm repo temporarily 
       - name: Clone ArgoCD repo 
         run: | 
           git clone https://github.com/${{ env.HELM_REPO }} helm_repo 
+
       - name: Update Helm Chart 
         run: |
           cd helm_repo/reactjs-helm
 
-          echo "Update repository username/imagename "
+          echo "Update repository username/imagename"
+          yq -i ".image.repository=\"${{ secrets.USERNAME }}/${{ env.DOCKER_IMAGE_NAME }}\"" values.yaml
 
-          yq -i ".image.repository=\"${{ secrets.USERNAME }}/${{ env.DOCKER_IMAGE_NAME}}\"" values.yaml
-
-          echo "Update image tag "
+          echo "Update image tag"
           yq -i ".image.tag=\"${{ env.TAG }}\"" values.yaml
 
           git config --global user.email "username@example.com"
@@ -70,5 +95,6 @@ jobs:
           git push https://${{ secrets.GIT_TOKEN }}@github.com/${{ env.HELM_REPO }}
       
       - name: Clean up 
+        if: always()
         run: | 
           rm -rf helm_repo
