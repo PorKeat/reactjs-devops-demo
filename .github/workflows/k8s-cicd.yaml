@@ -10,7 +10,7 @@ concurrency:
 # build docker image , push dockerhub
 env: 
   DOCKER_IMAGE_NAME: k8s-reactjs-itp-gen1
-  HELM_REPO: keoKAY/gitops_repo_itp_gen1
+  HELM_REPO: PorKeat/gitops-itp1-repo
 
 jobs: 
   setup:
